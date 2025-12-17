@@ -1,0 +1,94 @@
+version: 2.1
+
+orbs:
+    node: circleci/node@5.0.0
+    snyk: snyk/snyk@2.3.0
+
+parameters:
+  react-path:
+    type: string
+    default: "/home/circleci/project/react/"
+
+executors:
+  smarter-testing-node: 
+    docker:
+      - image: cimg/node:24.11.0
+    resource_class: small 
+    working_directory: /home/circleci/project
+    environment:
+      CI: "true"
+      NODE_OPTIONS: "--no-deprecation"
+      TEST_DELAY_MS: "50"
+      # Remove these two lines - Smarter testing handles junit output 
+      #JEST_JUNIT_OUTPUT_DIR: junit
+      #JEST_JUNIT_OUTPUT_NAME: junit-${CIRCLE_NODE_INDEX}.xml   
+
+jobs:
+  smarter-testing-dynamic-split: 
+    executor: smarter-testing-node
+    parallelism: 20
+    steps:
+      - checkout
+      - run:
+          name: Enable Corepack for Yarn 4
+          command: corepack enable
+      - restore_cache:
+          keys:
+            - v1-yarn4-deps-{{ checksum "react/.yarnrc.yml" }}-{{ checksum "react/yarn.lock" }}
+            - v1-yarn4-deps-
+      - run:
+          name: Install dependencies with Yarn 4
+          command: cd react && yarn install --immutable
+      - save_cache:
+          key: v1-yarn4-deps-{{ checksum "react/.yarnrc.yml" }}-{{ checksum "react/yarn.lock" }}
+          paths:
+            - react/node_modules
+      - run:
+          name: Run tets with Smarter Testing Dynamic Splitting
+          command: |
+            circleci run testsuite "react-unit-tests-v2"
+      - store_test_results:
+          path: react/junit
+      - store_artifacts:
+           path: react/junit 
+
+# Traditional static splitting for comparison (same parallelism)   
+  traditional-static-split:
+    executor: smarter-testing-node
+    parallelism: 20
+    steps:
+      - checkout
+      - run:
+          name: Enable Corepack for Yarn 4
+          command: corepack enable
+      - restore_cache:
+          keys:
+            - v1-yarn4-deps-{{ checksum "react/.yarnrc.yml" }}-{{ checksum "react/yarn.lock" }}
+            - v1-yarn4-deps-
+      - run:
+          name: Install dependencies with Yarn 4
+          command: cd react && yarn install --immutable
+      - save_cache:
+          key: v1-yarn4-deps-{{ checksum "react/.yarnrc.yml" }}-{{ checksum "react/yarn.lock" }}
+          paths:
+            - react/node_modules
+      - run:
+          name: Run tests with Traditional Static Splitting
+          command: |
+            cd react
+            mkdir -p junit
+            TEST_FILES=$(circleci tests glob "src/__tests__/*.test.js" | circleci tests split --split-by=timings)
+            JEST_JUNIT_OUTPUT_DIR=junit JEST_JUNIT_OUTPUT_NAME="junit-${CIRCLE_NODE_INDEX}.xml" yarn test --ci --runTestsByPath --passWithNoTests $TEST_FILES
+      - store_test_results:
+          path: react/junit
+      - store_artifacts:
+          path: react/junit
+
+          
+workflows:
+  smarter-testing-fresh-final:
+    jobs:
+      - smarter-testing-dynamic-split:
+          name: "smarter-testing-60x-dynamic"
+      - traditional-static-split:
+          name: "traditional-60x-static"
